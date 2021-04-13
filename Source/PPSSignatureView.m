@@ -1,8 +1,8 @@
 #import "PPSSignatureView.h"
 #import <OpenGLES/ES2/glext.h>
 
-#define             STROKE_WIDTH_MIN 0.004 // Stroke width determined by touch velocity
-#define             STROKE_WIDTH_MAX 0.030
+#define             STROKE_WIDTH_MIN 0.003 // Stroke width determined by touch velocity
+#define             STROKE_WIDTH_MAX 0.010
 #define       STROKE_WIDTH_SMOOTHING 0.5   // Low pass filter alpha
 
 #define           VELOCITY_CLAMP_MIN 20
@@ -31,6 +31,7 @@ static const int maxLength = MAXIMUM_VERTECES;
 
 // Append vertex to array buffer
 static inline void addVertex(uint *length, PPSSignaturePoint v) {
+    //NSLog(@"length %d",(*length));
     if ((*length) >= maxLength) {
         return;
     }
@@ -89,12 +90,16 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
     GLuint dotsArray;
     GLuint dotsBuffer;
     
+    CGFloat minX;
+    CGFloat maxX;
+    CGFloat minY;
+    CGFloat maxY;
     
     // Array of verteces, with current length
-    PPSSignaturePoint SignatureVertexData[maxLength];
+    PPSSignaturePoint *SignatureVertexData;
     uint length;
     
-    PPSSignaturePoint SignatureDotsData[maxLength];
+    PPSSignaturePoint *SignatureDotsData;
     uint dotsLength;
     
     
@@ -117,11 +122,19 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
 
 
 - (void)commonInit {
+    
     context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES2];
+    
+    minX = MAXFLOAT;
+    minY = MAXFLOAT;
+    maxX = 0;
+    maxY = 0;
     
     if (context) {
         time(NULL);
         
+        SignatureVertexData = malloc(sizeof(PPSSignaturePoint) * maxLength);
+        SignatureDotsData = malloc(sizeof(PPSSignaturePoint) * maxLength);
         self.backgroundColor = [UIColor whiteColor];
         self.opaque = NO;
         
@@ -131,6 +144,8 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
         
         // Turn on antialiasing
         self.drawableMultisample = GLKViewDrawableMultisample4X;
+        
+        self.eraseOnLongTouch = YES;
         
         [self setupGL];
         
@@ -151,6 +166,7 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
         [self addGestureRecognizer:longer];
         
     } else [NSException raise:@"NSOpenGLES2ContextException" format:@"Failed to create OpenGL ES2 context"];
+     
 }
 
 
@@ -168,19 +184,33 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
 }
 
 
-- (void)dealloc
-{
+-(void)tearDown{
     [self tearDownGL];
     
     if ([EAGLContext currentContext] == context) {
         [EAGLContext setCurrentContext:nil];
     }
-	context = nil;
+    free(SignatureDotsData);
+    free(SignatureVertexData);
+    
+    context = nil;
+    NSLog(@"tearDown PPSSignature");
 }
 
+//- (void)dealloc{
+//    [super dealloc];
+//    [self tearDownGL];
+//
+//   if ([EAGLContext currentContext] == context) {
+//        [EAGLContext setCurrentContext:nil];
+//    }
+//	context = nil;
+//    NSLog(@"Dealloc PPSSignature");
+//}
 
-- (void)drawRect:(CGRect)rect
-{
+
+- (void)drawRect:(CGRect)rect{
+    
     glClearColor(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -196,10 +226,16 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
         glBindVertexArrayOES(dotsArray);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, dotsLength);
     }
+     
 }
 
 
 - (void)erase {
+    minX = MAXFLOAT;
+    minY = MAXFLOAT;
+    maxX = 0;
+    maxY = 0;
+    
     length = 0;
     dotsLength = 0;
     self.hasSignature = NO;
@@ -214,16 +250,15 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
 	if (!self.hasSignature)
 		return nil;
 
-//    self.hidden = YES;
-//
-//    self.strokeColor = [UIColor whiteColor];
-//    [self setNeedsDisplay];
+    CGFloat offset = 5;
     UIImage *screenshot = [self snapshot];
-    
-//    self.strokeColor = nil;
-//
-//    self.hidden = NO;
-    return screenshot;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(maxX - minX + offset * 2, maxY - minY + offset * 2),
+                                           NO, 0);
+    [screenshot drawAtPoint:CGPointMake(-minX + offset, -minY + offset)];
+    UIImage* signature = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+
+    return signature;
 }
 
 
@@ -232,6 +267,13 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
 
 - (void)tap:(UITapGestureRecognizer *)t {
     CGPoint l = [t locationInView:self];
+
+    if (l.x > 0 && l.y > 0) {
+        minX = MIN(l.x, minX);
+        minY = MIN(l.y, minY);
+        maxX = MAX(l.x, maxX);
+        maxY = MAX(l.y, maxY);
+    }
     
     if (t.state == UIGestureRecognizerStateRecognized) {
         glBindBuffer(GL_ARRAY_BUFFER, dotsBuffer);
@@ -273,10 +315,24 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
 
 
 - (void)longPress:(UILongPressGestureRecognizer *)lp {
-    [self erase];
+    if (self.eraseOnLongTouch) {
+        [self erase];
+    }
 }
 
 - (void)pan:(UIPanGestureRecognizer *)p {
+    
+    CGPoint touch = [p locationInView:self];
+    if (touch.x > 0 && touch.y > 0) {
+        minX = MIN(touch.x, minX);
+        minY = MIN(touch.y, minY);
+        maxX = MAX(touch.x, maxX);
+        maxY = MAX(touch.y, maxY);
+    }
+
+    if (self.signatureDelegate != nil) {
+        [self.signatureDelegate signatureViewTouched:self];
+    }
     
     glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
     
@@ -370,7 +426,7 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
 #pragma mark - Private
 
 - (void)updateStrokeColor {
-    CGFloat red, green, blue, alpha, white;
+    CGFloat red= 0.0, green= 0.0, blue= 0.0, alpha= 1.0, white = 0.0;
     if (effect && self.strokeColor && [self.strokeColor getRed:&red green:&green blue:&blue alpha:&alpha]) {
         effect.constantColor = GLKVector4Make(red, green, blue, alpha);
     } else if (effect && self.strokeColor && [self.strokeColor getWhite:&white alpha:&alpha]) {
@@ -418,7 +474,7 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
     
     glGenBuffers(1, &vertexBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(SignatureVertexData), SignatureVertexData, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(PPSSignaturePoint)*maxLength, SignatureVertexData, GL_DYNAMIC_DRAW);
     [self bindShaderAttributes];
     
     
@@ -428,9 +484,8 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
     
     glGenBuffers(1, &dotsBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, dotsBuffer);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(SignatureDotsData), SignatureDotsData, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(PPSSignaturePoint)*maxLength, SignatureDotsData, GL_DYNAMIC_DRAW);
     [self bindShaderAttributes];
-    
     
     glBindVertexArrayOES(0);
 
@@ -478,13 +533,22 @@ static PPSSignaturePoint ViewPointToGL(CGPoint viewPoint, CGRect bounds, GLKVect
 
 - (void)tearDownGL
 {
+    NSLog(@"============");
+    NSLog(@"============");
+    NSLog(@"tearDownGL");
+    NSLog(@"============");
+    NSLog(@"============");
     [EAGLContext setCurrentContext:context];
+    glFinish();
+    
     
     glDeleteVertexArraysOES(1, &vertexArray);
     glDeleteBuffers(1, &vertexBuffer);
     
     glDeleteVertexArraysOES(1, &dotsArray);
     glDeleteBuffers(1, &dotsBuffer);
+    
+    //[EAGLContext setCurrentContext:nil];
     
     effect = nil;
 }
